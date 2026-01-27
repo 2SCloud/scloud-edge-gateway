@@ -11,6 +11,7 @@ import (
 	"2scloud-edge-gateway/internal/runtime"
 
 	"github.com/tetratelabs/wazero"
+	"github.com/tetratelabs/wazero/imports/wasi_snapshot_preview1"
 )
 
 func main() {
@@ -18,6 +19,10 @@ func main() {
 
 	r := wazero.NewRuntime(ctx)
 	defer r.Close(ctx)
+
+	if _, err := wasi_snapshot_preview1.Instantiate(ctx, r); err != nil {
+		log.Fatalf("failed to instantiate WASI: %v", err)
+	}
 
 	WafWasmPath := "./modules/scloud-eg-waf/target/wasm32-wasip1/release/scloud_eg_waf.wasm"
 	RateLimitWasmPath := "./modules/scloud-eg-rate-limit/target/wasm32-wasip1/release/scloud_eg_rate_limit.wasm"
@@ -62,7 +67,7 @@ func main() {
 
 		if decision == 0 {
 			w.WriteHeader(http.StatusOK)
-			fmt.Fprintln(w, "Request allowed")
+			fmt.Fprintln(w, "Request allowed by WAF")
 		} else {
 			w.WriteHeader(http.StatusForbidden)
 			fmt.Fprintln(w, "Request blocked by WAF")
@@ -71,17 +76,17 @@ func main() {
 
 	http.HandleFunc("/rate-limit", func(w http.ResponseWriter, req *http.Request) {
 
-		decision, err := runtime.CallRatelimit(ctx, RateLimitWasmModule)
+		decision, err := runtime.CallRatelimit(ctx, RateLimitWasmModule, *req)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			fmt.Fprintf(w, "WAF error: %v", err)
 			return
 		}
 
-		if decision == 1 {
+		if decision == 0 {
 			w.WriteHeader(http.StatusOK)
 			fmt.Fprintln(w, "RateLimit OK")
-		} else {
+		} else if decision == 1 {
 			w.WriteHeader(http.StatusForbidden)
 			fmt.Fprintln(w, "Request blocked by RateLimit")
 		}
