@@ -27,15 +27,15 @@ timeout_ms = 200
 
 config_mode = "inline"   # "init" | "inline"
 
-# (optionnels)
-# entry_fn = "handle"
-# alloc_fn = "alloc"
-# init_fn  = "init"
-
-  [modules.config]
-  mode = "block"
-  rules_path = "/etc/edge/rules.json"
-  log = true
+[module.config]
+mode = "block"
+rules_path = "/etc/edge/rules.json"
+log = true 
+# --- ADDED BASIC PARAMETERS ---
+max_body_size_kb = 2048         # Limits request size to prevent memory exhaustion
+allowed_ips = ["127.0.0.1"]     # List of trusted IPs to bypass checks
+blocked_ips = []                # List of IPs to be immediately rejected
+paranatia_level =1              # Defines how strictly rules are applied (1-4)
 
 # -------------------------
 # RateLimit init mode (config injected at init, request without config sent at each call)
