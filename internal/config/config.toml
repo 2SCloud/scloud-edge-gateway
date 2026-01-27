@@ -1,85 +1,61 @@
 version = "1.0"
 
-# =========================
-# Server
-# =========================
 [server]
 bind = "0.0.0.0:8080"
 admin_bind = "127.0.0.1:9090"
 graceful_shutdown_ms = 5000
 
-
-# =========================
-# Logging (placeholder)
-# =========================
 [logging]
-level = "info"               # trace|debug|info|warn|error (info only for now)
-format = "json"              # json|text
+level = "info"
+format = "json"
 output = "stdout"
 
-
-# =========================
-# WASM runtime configuration
-# =========================
 [wasm]
 runtime = "wazero"
 cache_dir = "./cache/wasm"
 max_modules = 64
-fuel = 10_000_000 # (not applied now, future use if we use fuel)
-max_memory_mb = 128
-max_stack_kb = 512
 
-
-# =========================
-# Default capabilities
-# (not applied now, future use)
-# =========================
-[capabilities.default]
-network = "none"    # none|outbound|all
-filesystem = "none" # none|ro|rw
-env = ["RUST_LOG"]
-clock = true
-random = true
-
-
-# =========================
-# Modules WASM
-# =========================
-
-# ---------- WAF ----------
+# -------------------------
+# WAF inline mode (config + request send at each call/request)
+# -------------------------
 [[modules]]
 id = "waf"
 enabled = true
 path = "./modules/scloud-eg-waf/target/wasm32-wasip1/release/scloud_eg_waf.wasm"
-
-entrypoint = "handle"
-alloc = "alloc"
-# init = "init"
-
 route = "/"
 timeout_ms = 200
 
+config_mode = "inline"   # "init" | "inline"
+
+# (optionnels)
+# entry_fn = "handle"
+# alloc_fn = "alloc"
+# init_fn  = "init"
+
   [modules.config]
-  mode = "block" # block|monitor
+  mode = "block"
   rules_path = "/etc/edge/rules.json"
   log = true
 
-
-# ------ RATE LIMIT -------
+# -------------------------
+# RateLimit init mode (config injected at init, request without config sent at each call)
+# -------------------------
 [[modules]]
 id = "ratelimit"
 enabled = true
 path = "./modules/scloud-eg-rate-limit/target/wasm32-wasip1/release/scloud_eg_rate_limit.wasm"
-
-entrypoint = "handle"
-alloc = "alloc"
-# init = "init"
-
 route = "/rate-limit"
 timeout_ms = 50
+
+config_mode = "init"
+
+# (optionnal)
+# entry_fn = "handle"
+# alloc_fn = "alloc"
+# init_fn  = "init"
 
   [modules.config]
   algorithm = "token_bucket"
   rps = 100
   burst = 200
-  key = "ip" # ip | header:X-Api-Key | jwt:sub
+  key = "ip"

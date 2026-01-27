@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -21,7 +20,7 @@ func main() {
 	ctx := context.Background()
 
 	// ========================
-	// Load TOML config
+	// Load config
 	// ========================
 	configPath := os.Getenv("EDGE_CONFIG")
 	if configPath == "" {
@@ -30,14 +29,11 @@ func main() {
 
 	var cfg config.Config
 	if _, err := toml.DecodeFile(configPath, &cfg); err != nil {
-		log.Fatalf("failed to read config %s: %v", configPath, err)
-	}
-	if cfg.Server.Bind == "" {
-		cfg.Server.Bind = ":8080"
+		log.Fatalf("failed to load config: %v", err)
 	}
 
 	// ========================
-	// WASM runtime (wazero)
+	// WASM runtime
 	// ========================
 	r := wazero.NewRuntime(ctx)
 	defer r.Close(ctx)
@@ -47,50 +43,33 @@ func main() {
 	}
 
 	// ========================
-	// Load & init modules
+	// Load modules
 	// ========================
 	wafCfg := runtime.FindModule(&cfg, "waf")
 	rlCfg := runtime.FindModule(&cfg, "ratelimit")
 
 	if wafCfg == nil || !wafCfg.Enabled {
-		log.Fatalf("waf module missing or disabled in config")
+		log.Fatal("waf module missing or disabled")
 	}
 	if rlCfg == nil || !rlCfg.Enabled {
-		log.Fatalf("ratelimit module missing or disabled in config")
+		log.Fatal("ratelimit module missing or disabled")
 	}
 
-	if wafCfg.Entrypoint == "" {
-		wafCfg.Entrypoint = "handle"
-	}
-	if wafCfg.Alloc == "" {
-		wafCfg.Alloc = "alloc"
-	}
-
-	if rlCfg.Entrypoint == "" {
-		rlCfg.Entrypoint = "handle"
-	}
-	if rlCfg.Alloc == "" {
-		rlCfg.Alloc = "alloc"
-	}
-
-	wafBytes, err := os.ReadFile(wafCfg.Path)
-	if err != nil {
-		log.Fatalf("failed to read waf wasm file %s: %v", wafCfg.Path, err)
-	}
-	rlBytes, err := os.ReadFile(rlCfg.Path)
-	if err != nil {
-		log.Fatalf("failed to read ratelimit wasm file %s: %v", rlCfg.Path, err)
-	}
+	wafBytes, _ := os.ReadFile(wafCfg.Path)
+	rlBytes, _ := os.ReadFile(rlCfg.Path)
 
 	wafModule, err := runtime.LoadWasmModule(ctx, r, wafBytes)
 	if err != nil {
-		log.Fatalf("failed to load waf module: %v", err)
+		log.Fatalf("load waf failed: %v", err)
 	}
 	rlModule, err := runtime.LoadWasmModule(ctx, r, rlBytes)
 	if err != nil {
-		log.Fatalf("failed to load ratelimit module: %v", err)
+		log.Fatalf("load ratelimit failed: %v", err)
 	}
 
+	// ========================
+	// Init modules (config_mode=init)
+	// ========================
 	if err := runtime.InitModule(ctx, wafModule, wafCfg); err != nil {
 		log.Fatalf("waf init error: %v", err)
 	}
@@ -102,12 +81,6 @@ func main() {
 	// HTTP handlers
 	// ========================
 	http.HandleFunc("/", func(w http.ResponseWriter, req *http.Request) {
-		requestData := map[string]string{
-			"path":   req.URL.Path,
-			"method": req.Method,
-		}
-		jsonData, _ := json.Marshal(requestData)
-
 		callCtx := ctx
 		if wafCfg.TimeoutMs > 0 {
 			var cancel context.CancelFunc
@@ -115,10 +88,10 @@ func main() {
 			defer cancel()
 		}
 
-		decision, err := runtime.CallWaf(callCtx, wafModule, jsonData)
+		reqObj := runtime.BuildWafRequest(req)
+		decision, err := runtime.CallModule(callCtx, wafModule, wafCfg, reqObj)
 		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			fmt.Fprintf(w, "WAF error: %v", err)
+			http.Error(w, err.Error(), 500)
 			return
 		}
 
@@ -139,22 +112,19 @@ func main() {
 			defer cancel()
 		}
 
-		decision, err := runtime.CallRatelimit(callCtx, rlModule, *req)
+		reqObj := runtime.BuildRateLimitRequest(req)
+		decision, err := runtime.CallModule(callCtx, rlModule, rlCfg, reqObj)
 		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			fmt.Fprintf(w, "RateLimit error: %v", err)
+			http.Error(w, err.Error(), 500)
 			return
 		}
 
 		if decision == 0 {
 			w.WriteHeader(http.StatusOK)
 			fmt.Fprintln(w, "RateLimit OK")
-		} else if decision == 1 {
-			w.WriteHeader(http.StatusForbidden)
-			fmt.Fprintln(w, "Request blocked by RateLimit")
 		} else {
 			w.WriteHeader(http.StatusForbidden)
-			fmt.Fprintf(w, "RateLimit decision=%d\n", decision)
+			fmt.Fprintln(w, "Request blocked by RateLimit")
 		}
 	})
 

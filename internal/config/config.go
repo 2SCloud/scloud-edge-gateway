@@ -31,13 +31,16 @@ type WasmCfg struct {
 }
 
 type ModuleCfg struct {
-	ID         string         `toml:"id"`
-	Path       string         `toml:"path"`
-	Enabled    bool           `toml:"enabled"`
-	Entrypoint string         `toml:"entrypoint"`
-	Alloc      string         `toml:"alloc"`
-	Init       string         `toml:"init"`
-	Route      string         `toml:"route"`
-	TimeoutMs  int            `toml:"timeout_ms"`
-	Config     map[string]any `toml:"config"`
+	ID         string `toml:"id"`
+	Path       string `toml:"path"`
+	Enabled    bool   `toml:"enabled"`
+	Route      string `toml:"route"`
+	TimeoutMs  int    `toml:"timeout_ms"`
+	ConfigMode string `toml:"config_mode"` // "init" | "inline"
+
+	// Optionnals overrides (if empty/null, defaults are used)
+	EntryFn string         `toml:"entry_fn"`
+	AllocFn string         `toml:"alloc_fn"`
+	InitFn  string         `toml:"init_fn"`
+	Config  map[string]any `toml:"config"`
 }
