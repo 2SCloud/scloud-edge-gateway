@@ -2,14 +2,16 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"time"
 
+	"2scloud-edge-gateway/internal/config"
 	"2scloud-edge-gateway/internal/runtime"
 
+	"github.com/BurntSushi/toml"
 	"github.com/tetratelabs/wazero"
 	"github.com/tetratelabs/wazero/imports/wasi_snapshot_preview1"
 )
@@ -17,6 +19,22 @@ import (
 func main() {
 	ctx := context.Background()
 
+	// ========================
+	// Load config
+	// ========================
+	configPath := os.Getenv("EDGE_CONFIG")
+	if configPath == "" {
+		configPath = "./internal/config/config.toml"
+	}
+
+	var cfg config.Config
+	if _, err := toml.DecodeFile(configPath, &cfg); err != nil {
+		log.Fatalf("failed to load config: %v", err)
+	}
+
+	// ========================
+	// WASM runtime
+	// ========================
 	r := wazero.NewRuntime(ctx)
 	defer r.Close(ctx)
 
@@ -24,44 +42,56 @@ func main() {
 		log.Fatalf("failed to instantiate WASI: %v", err)
 	}
 
-	WafWasmPath := "./modules/scloud-eg-waf/target/wasm32-wasip1/release/scloud_eg_waf.wasm"
-	RateLimitWasmPath := "./modules/scloud-eg-rate-limit/target/wasm32-wasip1/release/scloud_eg_rate_limit.wasm"
+	// ========================
+	// Load modules
+	// ========================
+	wafCfg := runtime.FindModule(&cfg, "waf")
+	rlCfg := runtime.FindModule(&cfg, "ratelimit")
 
-	//========================
-	// WASM files bytes
-	//========================
-	WafWasmBytes, err := os.ReadFile(WafWasmPath)
-	if err != nil {
-		log.Fatalf("Failed to read WASM file: %v", err)
+	if wafCfg == nil || !wafCfg.Enabled {
+		log.Fatal("waf module missing or disabled")
 	}
-	RateLimitWasmBytes, err := os.ReadFile(RateLimitWasmPath)
-	if err != nil {
-		log.Fatalf("Failed to read WASM file: %v", err)
+	if rlCfg == nil || !rlCfg.Enabled {
+		log.Fatal("ratelimit module missing or disabled")
 	}
 
-	//========================
-	// WASM files modules
-	//========================
-	WafWasmModule, err := runtime.LoadWasmModule(ctx, r, WafWasmBytes)
+	wafBytes, _ := os.ReadFile(wafCfg.Path)
+	rlBytes, _ := os.ReadFile(rlCfg.Path)
+
+	wafModule, err := runtime.LoadWasmModule(ctx, r, wafBytes)
 	if err != nil {
-		log.Fatalf("Failed to load WASM module: %v", err)
+		log.Fatalf("load waf failed: %v", err)
 	}
-	RateLimitWasmModule, err := runtime.LoadWasmModule(ctx, r, RateLimitWasmBytes)
+	rlModule, err := runtime.LoadWasmModule(ctx, r, rlBytes)
 	if err != nil {
-		log.Fatalf("Failed to load WASM module: %v", err)
+		log.Fatalf("load ratelimit failed: %v", err)
 	}
 
+	// ========================
+	// Init modules (config_mode=init)
+	// ========================
+	if err := runtime.InitModule(ctx, wafModule, wafCfg); err != nil {
+		log.Fatalf("waf init error: %v", err)
+	}
+	if err := runtime.InitModule(ctx, rlModule, rlCfg); err != nil {
+		log.Fatalf("ratelimit init error: %v", err)
+	}
+
+	// ========================
+	// HTTP handlers
+	// ========================
 	http.HandleFunc("/", func(w http.ResponseWriter, req *http.Request) {
-		requestData := map[string]string{
-			"path":   req.URL.Path,
-			"method": req.Method,
+		callCtx := ctx
+		if wafCfg.TimeoutMs > 0 {
+			var cancel context.CancelFunc
+			callCtx, cancel = context.WithTimeout(ctx, time.Duration(wafCfg.TimeoutMs)*time.Millisecond)
+			defer cancel()
 		}
-		jsonData, _ := json.Marshal(requestData)
 
-		decision, err := runtime.CallWaf(ctx, WafWasmModule, jsonData)
+		reqObj := runtime.BuildWafRequest(req)
+		decision, err := runtime.CallModule(callCtx, wafModule, wafCfg, reqObj)
 		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			fmt.Fprintf(w, "WAF error: %v", err)
+			http.Error(w, err.Error(), 500)
 			return
 		}
 
@@ -75,23 +105,29 @@ func main() {
 	})
 
 	http.HandleFunc("/rate-limit", func(w http.ResponseWriter, req *http.Request) {
+		callCtx := ctx
+		if rlCfg.TimeoutMs > 0 {
+			var cancel context.CancelFunc
+			callCtx, cancel = context.WithTimeout(ctx, time.Duration(rlCfg.TimeoutMs)*time.Millisecond)
+			defer cancel()
+		}
 
-		decision, err := runtime.CallRatelimit(ctx, RateLimitWasmModule, *req)
+		reqObj := runtime.BuildRateLimitRequest(req)
+		decision, err := runtime.CallModule(callCtx, rlModule, rlCfg, reqObj)
 		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			fmt.Fprintf(w, "WAF error: %v", err)
+			http.Error(w, err.Error(), 500)
 			return
 		}
 
 		if decision == 0 {
 			w.WriteHeader(http.StatusOK)
 			fmt.Fprintln(w, "RateLimit OK")
-		} else if decision == 1 {
+		} else {
 			w.WriteHeader(http.StatusForbidden)
 			fmt.Fprintln(w, "Request blocked by RateLimit")
 		}
 	})
 
-	fmt.Println("Edge Gateway listening on :8080")
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	log.Printf("Edge Gateway listening on %s (config: %s)", cfg.Server.Bind, configPath)
+	log.Fatal(http.ListenAndServe(cfg.Server.Bind, nil))
 }
