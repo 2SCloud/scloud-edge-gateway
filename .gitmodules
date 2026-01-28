@@ -1,0 +1,9 @@
+[submodule "modules/scloud-eg-waf"]
+  path = modules/scloud-eg-waf
+  url = git@github.com:2SCloud/scloud-eg-waf.git
+[submodule "modules/scloud-eg-rate-limit"]
+  path = modules/scloud-eg-rate-limit
+  url = git@github.com:2SCloud/scloud-eg-rate-limit.git
+[submodule "modules/scloud-eg-firewall"]
+  path = modules/scloud-eg-firewall
+  url = git@github.com:2SCloud/scloud-eg-firewall.git
