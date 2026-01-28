@@ -80,7 +80,32 @@ func main() {
 	// ========================
 	// HTTP handlers
 	// ========================
-	http.HandleFunc("/", func(w http.ResponseWriter, req *http.Request) {
+	rootHandler := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.URL.Path == "/rate-limit" {
+			callCtx := ctx
+			if rlCfg.TimeoutMs > 0 {
+				var cancel context.CancelFunc
+				callCtx, cancel = context.WithTimeout(ctx, time.Duration(rlCfg.TimeoutMs)*time.Millisecond)
+				defer cancel()
+			}
+
+			reqObj := runtime.BuildRateLimitRequest(req)
+			decision, err := runtime.CallModule(callCtx, rlModule, rlCfg, reqObj)
+			if err != nil {
+				http.Error(w, err.Error(), 500)
+				return
+			}
+
+			if decision == 0 {
+				w.WriteHeader(http.StatusOK)
+				fmt.Fprintln(w, "RateLimit OK")
+			} else {
+				w.WriteHeader(http.StatusForbidden)
+				fmt.Fprintln(w, "Request blocked by RateLimit")
+			}
+			return
+		}
+
 		callCtx := ctx
 		if wafCfg.TimeoutMs > 0 {
 			var cancel context.CancelFunc
@@ -91,43 +116,30 @@ func main() {
 		reqObj := runtime.BuildWafRequest(req)
 		decision, err := runtime.CallModule(callCtx, wafModule, wafCfg, reqObj)
 		if err != nil {
-			http.Error(w, err.Error(), 500)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 
-		if decision == 0 {
+		if decision != 0 {
+			reason, _ := runtime.ReadLastReason(callCtx, wafModule)
+			w.WriteHeader(http.StatusForbidden)
+
+			fmt.Fprintf(w, "Request blocked by WAF\n\treason=%s\n\tmethod=%s\n\tpath=%s\nprotected by 2SCloud\n", reason, req.Method, req.URL.Path)
+			log.Printf("WAF BLOCK: reason=%q method=%s path=%s\n", reason, req.Method, req.URL.Path)
+			return
+		} else {
 			w.WriteHeader(http.StatusOK)
 			fmt.Fprintln(w, "Request allowed by WAF")
-		} else {
-			w.WriteHeader(http.StatusForbidden)
-			fmt.Fprintln(w, "Request blocked by WAF")
 		}
+
 	})
 
-	http.HandleFunc("/rate-limit", func(w http.ResponseWriter, req *http.Request) {
-		callCtx := ctx
-		if rlCfg.TimeoutMs > 0 {
-			var cancel context.CancelFunc
-			callCtx, cancel = context.WithTimeout(ctx, time.Duration(rlCfg.TimeoutMs)*time.Millisecond)
-			defer cancel()
-		}
-
-		reqObj := runtime.BuildRateLimitRequest(req)
-		decision, err := runtime.CallModule(callCtx, rlModule, rlCfg, reqObj)
-		if err != nil {
-			http.Error(w, err.Error(), 500)
-			return
-		}
-
-		if decision == 0 {
-			w.WriteHeader(http.StatusOK)
-			fmt.Fprintln(w, "RateLimit OK")
-		} else {
-			w.WriteHeader(http.StatusForbidden)
-			fmt.Fprintln(w, "Request blocked by RateLimit")
-		}
-	})
+	srv := &http.Server{
+		Addr:    cfg.Server.Bind,
+		Handler: rootHandler,
+	}
 
 	log.Printf("Edge Gateway listening on %s (config: %s)", cfg.Server.Bind, configPath)
-	log.Fatal(http.ListenAndServe(cfg.Server.Bind, nil))
+	log.Fatal(srv.ListenAndServe())
+
 }

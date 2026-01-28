@@ -24,18 +24,33 @@ enabled = true
 path = "./modules/scloud-eg-waf/target/wasm32-wasip1/release/scloud_eg_waf.wasm"
 route = "/"
 timeout_ms = 200
+config_mode = "inline" # "init" | "inline"
 
-config_mode = "inline"   # "init" | "inline"
-
-# (optionnels)
+# (optionnal)
 # entry_fn = "handle"
 # alloc_fn = "alloc"
 # init_fn  = "init"
 
-  [modules.config]
-  mode = "block"
-  rules_path = "/etc/edge/rules.json"
-  log = true
+    [modules.config]
+    mode = "block" # "block" | "log" | "disabled"
+    log = true
+    blocked_status = 403
+
+    # limites & parsing
+    max_header_bytes = 16384
+    max_body_bytes   = 1048576 # 1MB
+    inspect_body     = false
+    normalize_path   = true
+
+    # allowlist / denylist
+    allowed_methods = ["GET","POST","PUT","DELETE","PATCH","HEAD","OPTIONS"]
+    ip_allowlist = ["10.0.0.0/8", "192.168.0.0/16", "127.0.0.1/24"]
+    ip_denylist  = ["1.2.3.4/32"]
+
+    block_path_prefixes = ["/admin", "/.git"]
+
+    rules_path = "waf.json"
+    rules_reload_seconds = 60
 
 # -------------------------
 # RateLimit init mode (config injected at init, request without config sent at each call)
@@ -46,8 +61,7 @@ enabled = true
 path = "./modules/scloud-eg-rate-limit/target/wasm32-wasip1/release/scloud_eg_rate_limit.wasm"
 route = "/rate-limit"
 timeout_ms = 50
-
-config_mode = "init"
+config_mode = "init" # "init" | "inline"
 
 # (optionnal)
 # entry_fn = "handle"
@@ -55,7 +69,5 @@ config_mode = "init"
 # init_fn  = "init"
 
   [modules.config]
-  algorithm = "token_bucket"
-  rps = 100
-  burst = 200
-  key = "ip"
+  max_requests = 10
+  window_seconds = 30
