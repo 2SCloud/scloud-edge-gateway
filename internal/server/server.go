@@ -18,6 +18,8 @@ func Run() error {
 		w.Write([]byte("ok"))
 	})
 
+	// Exemple: integrate WAF module before "/healthz"
+	// TODO: check if /healthz is really executed (I didn't see the "ok" returned by /healthz)
 	wafHandler := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		if req.URL.Path == "/healthz" {
 			mux.ServeHTTP(w, req)

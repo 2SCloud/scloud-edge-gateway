@@ -38,7 +38,6 @@ type ModuleCfg struct {
 	TimeoutMs  int    `toml:"timeout_ms"`
 	ConfigMode string `toml:"config_mode"` // "init" | "inline"
 
-	// Optionnals overrides (if empty/null, defaults are used)
 	EntryFn string         `toml:"entry_fn"`
 	AllocFn string         `toml:"alloc_fn"`
 	InitFn  string         `toml:"init_fn"`

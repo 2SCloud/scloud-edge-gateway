@@ -10,6 +10,7 @@ import (
 
 	"2scloud-edge-gateway/internal/config"
 	"2scloud-edge-gateway/internal/runtime"
+	"2scloud-edge-gateway/internal/utils"
 
 	"github.com/BurntSushi/toml"
 	"github.com/tetratelabs/wazero"
@@ -80,6 +81,15 @@ func main() {
 	// ========================
 	// HTTP handlers
 	// ========================
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.Write([]byte("ok"))
+	})
+	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintln(w, "Request allowed by WAF")
+	})
+
 	rootHandler := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		if req.URL.Path == "/rate-limit" {
 			callCtx := ctx
@@ -120,16 +130,23 @@ func main() {
 			return
 		}
 
+		reason, _ := runtime.ReadLastReason(callCtx, wafModule)
+		wafHeader := "processed"
+		if decision == 0 && reason == "scope-bypass" {
+			wafHeader = "bypass"
+		}
+		w.Header().Set("SCLOUD-X-WAF", wafHeader)
+
+		utils.LogInfo("WAF %s: method=%s path=%s decision=%d reason=%s", wafHeader, req.Method, req.URL.Path, decision, reason)
+
 		if decision != 0 {
-			reason, _ := runtime.ReadLastReason(callCtx, wafModule)
 			w.WriteHeader(http.StatusForbidden)
 
 			fmt.Fprintf(w, "Request blocked by WAF\n\treason=%s\n\tmethod=%s\n\tpath=%s\nprotected by 2SCloud\n", reason, req.Method, req.URL.Path)
-			log.Printf("WAF BLOCK: reason=%q method=%s path=%s\n", reason, req.Method, req.URL.Path)
+			utils.LogWarning("WAF BLOCK: reason=%q method=%s path=%s", reason, req.Method, req.URL.Path)
 			return
 		} else {
-			w.WriteHeader(http.StatusOK)
-			fmt.Fprintln(w, "Request allowed by WAF")
+			mux.ServeHTTP(w, req)
 		}
 
 	})
@@ -139,7 +156,8 @@ func main() {
 		Handler: rootHandler,
 	}
 
-	log.Printf("Edge Gateway listening on %s (config: %s)", cfg.Server.Bind, configPath)
+	utils.LogDebug("Edge Gateway version: %s", cfg.Version)
+	utils.LogSuccess("Edge Gateway listening on %s (config: %s)", cfg.Server.Bind, configPath)
 	log.Fatal(srv.ListenAndServe())
 
 }
