@@ -81,7 +81,6 @@ func main() {
 	// HTTP handlers
 	// ========================
 	rootHandler := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		// Route manuelle (pas de ServeMux => pas de Clean automatique)
 		if req.URL.Path == "/rate-limit" {
 			callCtx := ctx
 			if rlCfg.TimeoutMs > 0 {
@@ -107,7 +106,6 @@ func main() {
 			return
 		}
 
-		// Default: WAF
 		callCtx := ctx
 		if wafCfg.TimeoutMs > 0 {
 			var cancel context.CancelFunc
