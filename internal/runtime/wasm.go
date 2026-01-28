@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
+	"os"
 
 	"2scloud-edge-gateway/internal/config"
 
@@ -15,7 +17,6 @@ import (
 // =======================
 // Generic helpers
 // =======================
-
 func FindModule(cfg *config.Config, id string) *config.ModuleCfg {
 	for i := range cfg.Modules {
 		if cfg.Modules[i].ID == id {
@@ -41,15 +42,58 @@ func resolveFns(mc *config.ModuleCfg) (entryFn, allocFn, initFn string) {
 	return
 }
 
+func ReadLastReason(ctx context.Context, m api.Module) (string, error) {
+	fn := m.ExportedFunction("last_reason")
+	if fn == nil {
+		return "", nil
+	}
+
+	mem := m.Memory()
+	if mem == nil {
+		return "", fmt.Errorf("WASM memory not found")
+	}
+
+	res, err := fn.Call(ctx)
+	if err != nil {
+		return "", fmt.Errorf("last_reason call failed: %w", err)
+	}
+	if len(res) == 0 {
+		return "", fmt.Errorf("last_reason returned no values")
+	}
+
+	packed := res[0]
+	ptr := uint32(packed >> 32)
+	l := uint32(packed & 0xffffffff)
+
+	if l == 0 {
+		return "", nil
+	}
+
+	b, ok := mem.Read(ptr, l)
+	if !ok {
+		return "", fmt.Errorf("failed to read reason from WASM memory")
+	}
+
+	if dealloc := m.ExportedFunction("dealloc"); dealloc != nil {
+		_, _ = dealloc.Call(ctx, uint64(ptr), uint64(l))
+	}
+
+	return string(b), nil
+}
+
 func callWithBytes(ctx context.Context, m api.Module, allocFn, fnName string, payload []byte) (uint64, error) {
 	fn := m.ExportedFunction(fnName)
 	if fn == nil {
 		return 0, fmt.Errorf("%s function not found", fnName)
 	}
+
 	alloc := m.ExportedFunction(allocFn)
 	if alloc == nil {
 		return 0, fmt.Errorf("%s function not found", allocFn)
 	}
+
+	dealloc := m.ExportedFunction("dealloc")
+
 	mem := m.Memory()
 	if mem == nil {
 		return 0, fmt.Errorf("WASM memory not found")
@@ -61,6 +105,12 @@ func callWithBytes(ctx context.Context, m api.Module, allocFn, fnName string, pa
 	}
 	ptr := uint32(ptrRes[0])
 
+	if dealloc != nil {
+		defer func() {
+			_, _ = dealloc.Call(ctx, uint64(ptr), uint64(len(payload)))
+		}()
+	}
+
 	if !mem.Write(ptr, payload) {
 		return 0, fmt.Errorf("failed to write WASM memory")
 	}
@@ -69,20 +119,29 @@ func callWithBytes(ctx context.Context, m api.Module, allocFn, fnName string, pa
 	if err != nil {
 		return 0, fmt.Errorf("%s call failed: %w", fnName, err)
 	}
+	if len(res) == 0 {
+		return 0, fmt.Errorf("%s returned no values", fnName)
+	}
+
 	return res[0], nil
 }
 
 // =======================
 // Module lifecycle
 // =======================
-
 func LoadWasmModule(ctx context.Context, r wazero.Runtime, wasmBytes []byte) (api.Module, error) {
 	compiled, err := r.CompileModule(ctx, wasmBytes)
 	if err != nil {
 		return nil, fmt.Errorf("compile wasm failed: %w", err)
 	}
 
-	module, err := r.InstantiateModule(ctx, compiled, wazero.NewModuleConfig())
+	fs := os.DirFS("./internal/config/rules/")
+
+	moduleCfg := wazero.
+		NewModuleConfig().
+		WithFS(fs)
+
+	module, err := r.InstantiateModule(ctx, compiled, moduleCfg)
 	if err != nil {
 		return nil, fmt.Errorf("instantiate wasm failed: %w", err)
 	}
@@ -90,7 +149,7 @@ func LoadWasmModule(ctx context.Context, r wazero.Runtime, wasmBytes []byte) (ap
 	return module, nil
 }
 
-// init(config) uniquement si config_mode=init
+// init(config) if config_mode=init
 func InitModule(ctx context.Context, mod api.Module, mc *config.ModuleCfg) error {
 	if mc.ConfigMode != "init" {
 		return nil
@@ -118,14 +177,13 @@ func InitModule(ctx context.Context, mod api.Module, mc *config.ModuleCfg) error
 		return fmt.Errorf("module %q: init returned %d", mc.ID, rc)
 	}
 
-	_ = entryFn // silence lint, entryFn used later
+	_ = entryFn
 	return nil
 }
 
 // =======================
 // Unified call (init / inline)
 // =======================
-
 func CallModule(
 	ctx context.Context,
 	mod api.Module,
@@ -169,11 +227,39 @@ func CallModule(
 // =======================
 // Request builders
 // =======================
-
 func BuildWafRequest(req *http.Request) map[string]any {
+	ip, _, _ := net.SplitHostPort(req.RemoteAddr)
+	if ip == "" {
+		ip = req.RemoteAddr
+	}
+
+	h := map[string][]string{}
+	for k, v := range req.Header {
+		h[k] = v
+	}
+
+	q := map[string][]string{}
+	for k, v := range req.URL.Query() {
+		q[k] = v
+	}
+
 	return map[string]any{
-		"path":   req.URL.Path,
-		"method": req.Method,
+		"path":     req.URL.Path,
+		"raw_path": req.URL.EscapedPath(),
+		"method":   req.Method,
+		"host":     req.Host,
+		"scheme": func() string {
+			if req.TLS != nil {
+				return "https"
+			}
+			return "http"
+		}(),
+		"ip":          ip,
+		"remote_addr": req.RemoteAddr,
+		"user_agent":  req.UserAgent(),
+		"referer":     req.Referer(),
+		"headers":     h,
+		"query":       q,
 	}
 }
 

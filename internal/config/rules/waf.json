@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "rules": [
+    {
+      "id": "path-traversal",
+      "description": "Detect path traversal attempts",
+      "enabled": true,
+      "type": "path_contains",
+      "values": ["..", "%2e%2e", "%2E%2E"],
+      "action": "block"
+    },
+    {
+      "id": "admin-path",
+      "description": "Block admin paths",
+      "enabled": true,
+      "type": "path_prefix",
+      "values": ["/admin", "/.git", "/.env"],
+      "action": "block"
+    },
+    {
+      "id": "xss-basic",
+      "description": "Basic XSS patterns",
+      "enabled": true,
+      "type": "regex",
+      "values": [
+        "(?i)<script",
+        "(?i)onerror\\s*=",
+        "(?i)javascript:"
+      ],
+      "action": "block"
+    },
+    {
+      "id": "sql-injection-basic",
+      "description": "Basic SQLi patterns",
+      "enabled": true,
+      "type": "regex",
+      "values": [
+        "(?i)union\\s+select",
+        "(?i)or\\s+1=1",
+        "(?i)'\\s+or\\s+'1'='1"
+      ],
+      "action": "block"
+    }
+  ]
+}
