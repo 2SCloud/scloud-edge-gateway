@@ -1,33 +1,17 @@
-# Roadmap v1.0.0 (Envoy + K8s)
-
-- [ ] Kubernetes running (local or server)
-- [ ] The Edge-Gateway is the only entrypoint
-- [ ] Test backend exposed via TLS
-- [ ] TLS operationnal
-- [ ] `app.example.com` -> service
-- [ ] Observability OK
-- [ ] Minimal Control Plane in Golang
-- [ ] Rust structure ready for future modules
-
-## Deployment
-```bash
-make deploy
-```
-
+# SCloud Edge Gateway
 ## Project struct explained:
-
 - `cmd/edge-gateway/main.go` -> Entrypoint
 
-- `internal/server` -> HTTP/TLS listeners
-- `internal/proxy/` -> Reverse proxy logic
-- `internal/config/` -> Config loading (file/env/api)
-- `internal/runtime` -> Module runtime (WASM)
-- `internal/middleware` -> Glue between `Go` & `Rust`
-- `internal/observability` -> All metrics about the Edge-Gateway
+- `internal/config` -> All logic concerning configuration + configuration files
+- `internal/config/rules` -> JSON configurations files (hot-reloadable)
+- `internal/runtime/wasm.go` -> Logic for calling Rust WASM compilated files
+- `internal/utils` -> Utilities (logs, colors...etc)
 
 - `modules/` -> Rust security modules
 - `modules/waf` -> Web Application Firewall
 - `modules/firewall` -> L3/L4/L7 filtering
+
+### Later:
 - `modules/ratelimit` -> Rate limiting / quotas
 - `modules/bot-detection` -> Bot / scraper detection
 - `modules/ddos` -> DDoS heuristics
@@ -42,20 +26,33 @@ make deploy
 - `modules/shadow-mode` -> Observe-only security
 - `modules/sandbox` -> Untrusted plugins
 
-- `api/admin/openapi.yaml` -> Admin API
-
 - `deploy/docker/Dockerfile` -> Deploy on docker
-- `modules/kubernetes/edge-gateway.yaml` -> Deploy on kubernetes
-
-- `scripts/build-wasm.sh`
-- `scripts/run-dev.sh`
+- `deploy/kubernetes/edge-gateway.yaml` -> Deploy on kubernetes
 
 
-# Roadmap v2.0.0
+## Deployment
+Compile each Rust security modules:
+```bash
+cd modules/scloud-eg-{module-name}
+rustup target add wasm32-wasip1
+cargo build --release --target wasm32-wasip1
+```
 
-## Next steps
+After that you need to launch the gateway:
+```bash
+go run cmd/edge-gateway/main.go
+```
 
-- Add Rust modules for WAF, rate-limiting, bot detection
-- Implement dynamic rule push from Go control-plane to Envoy / Rust modules
-- Advanced observability (Prometheus, Grafana, alerting)
-- Authentication and policy management
+## Roadmap v1.0.0
+- [ ] Modules are ajustable (init - inline(hot-reload))
+  - [ ] Only JSON "sub-config" are hot-reloadable
+  - [ ] TOML config is static
+- [ ] Security modules:
+  - [ ] WAF
+  - [ ] rate-limit
+  - [ ] firewall
+- [ ] The Edge-Gateway is the only entrypoint
+- [ ] Main dashboard with traffic datas
+  - [ ] Observability OK
+    - [ ] Prometheus
+    - [ ] Grafana
