@@ -7,3 +7,6 @@
 [submodule "modules/scloud-eg-firewall"]
   path = modules/scloud-eg-firewall
   url = git@github.com:2SCloud/scloud-eg-firewall.git
+[submodule "scloud-eg-compute"]
+	path = scloud-eg-compute
+	url = git@github.com:2SCloud/scloud-eg-compute.git
