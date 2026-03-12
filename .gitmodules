@@ -10,3 +10,6 @@
 [submodule "scloud-eg-compute"]
 	path = scloud-eg-compute
 	url = git@github.com:2SCloud/scloud-eg-compute.git
+[submodule "scloud-eg-frontend"]
+  path = frontend
+  url = git@github.com:2SCloud/scloud-eg-frontend.git
