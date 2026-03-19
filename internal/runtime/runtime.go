@@ -17,6 +17,7 @@ import (
 // =======================
 // Generic helpers
 // =======================
+
 func FindModule(cfg *config.Config, id string) *config.ModuleCfg {
 	for i := range cfg.Modules {
 		if cfg.Modules[i].ID == id {
@@ -129,6 +130,7 @@ func callWithBytes(ctx context.Context, m api.Module, allocFn, fnName string, pa
 // =======================
 // Module lifecycle
 // =======================
+
 func LoadWasmModule(ctx context.Context, r wazero.Runtime, wasmBytes []byte) (api.Module, error) {
 	compiled, err := r.CompileModule(ctx, wasmBytes)
 	if err != nil {
@@ -149,7 +151,6 @@ func LoadWasmModule(ctx context.Context, r wazero.Runtime, wasmBytes []byte) (ap
 	return module, nil
 }
 
-// init(config) if config_mode=init
 func InitModule(ctx context.Context, mod api.Module, mc *config.ModuleCfg) error {
 	if mc.ConfigMode != "init" {
 		return nil
@@ -182,8 +183,9 @@ func InitModule(ctx context.Context, mod api.Module, mc *config.ModuleCfg) error
 }
 
 // =======================
-// Unified call (init / inline)
+// Unified call
 // =======================
+
 func CallModule(
 	ctx context.Context,
 	mod api.Module,
@@ -197,16 +199,12 @@ func CallModule(
 
 	switch mc.ConfigMode {
 	case "init":
-		// handle(request)
 		payload = request
-
 	case "inline":
-		// handle({config, request})
 		payload = map[string]any{
 			"config":  mc.Config,
 			"request": request,
 		}
-
 	default:
 		return -1, fmt.Errorf("module %q: unknown config_mode %q", mc.ID, mc.ConfigMode)
 	}
@@ -225,8 +223,9 @@ func CallModule(
 }
 
 // =======================
-// Request builders
+// Request builders (net/http — conservés si besoin)
 // =======================
+
 func BuildWafRequest(req *http.Request) map[string]any {
 	ip, _, _ := net.SplitHostPort(req.RemoteAddr)
 	if ip == "" {

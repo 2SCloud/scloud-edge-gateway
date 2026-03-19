@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"net/http"
 	"os"
 	"time"
 
@@ -13,7 +12,9 @@ import (
 	"2scloud-edge-gateway/internal/utils"
 
 	"github.com/BurntSushi/toml"
+	"github.com/gofiber/fiber/v2"
 	"github.com/tetratelabs/wazero"
+	"github.com/tetratelabs/wazero/api"
 	"github.com/tetratelabs/wazero/imports/wasi_snapshot_preview1"
 )
 
@@ -44,120 +45,167 @@ func main() {
 	}
 
 	// ========================
-	// Load modules
+	// Load + init modules
 	// ========================
-	wafCfg := runtime.FindModule(&cfg, "waf")
-	rlCfg := runtime.FindModule(&cfg, "ratelimit")
-
-	if wafCfg == nil || !wafCfg.Enabled {
-		log.Fatal("waf module missing or disabled")
-	}
-	if rlCfg == nil || !rlCfg.Enabled {
-		log.Fatal("ratelimit module missing or disabled")
-	}
-
-	wafBytes, _ := os.ReadFile(wafCfg.Path)
-	rlBytes, _ := os.ReadFile(rlCfg.Path)
-
-	wafModule, err := runtime.LoadWasmModule(ctx, r, wafBytes)
+	wafMod, wafCfg, err := loadAndInit(ctx, r, &cfg, "waf")
 	if err != nil {
-		log.Fatalf("load waf failed: %v", err)
+		log.Fatalf("waf: %v", err)
 	}
-	rlModule, err := runtime.LoadWasmModule(ctx, r, rlBytes)
+
+	rlMod, rlCfg, err := loadAndInit(ctx, r, &cfg, "ratelimit")
 	if err != nil {
-		log.Fatalf("load ratelimit failed: %v", err)
+		log.Fatalf("ratelimit: %v", err)
 	}
 
 	// ========================
-	// Init modules (config_mode=init)
+	// Fiber app
 	// ========================
-	if err := runtime.InitModule(ctx, wafModule, wafCfg); err != nil {
-		log.Fatalf("waf init error: %v", err)
-	}
-	if err := runtime.InitModule(ctx, rlModule, rlCfg); err != nil {
-		log.Fatalf("ratelimit init error: %v", err)
-	}
-
-	// ========================
-	// HTTP handlers
-	// ========================
-	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.Write([]byte("ok"))
-	})
-	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprintln(w, "Request allowed by WAF")
+	app := fiber.New(fiber.Config{
+		// Masque "Fiber" dans les headers
+		ServerHeader: "",
+		AppName:      "",
+		// Erreurs JSON cohérentes
+		ErrorHandler: func(c *fiber.Ctx, err error) error {
+			code := fiber.StatusInternalServerError
+			if e, ok := err.(*fiber.Error); ok {
+				code = e.Code
+			}
+			return c.Status(code).JSON(fiber.Map{"error": err.Error()})
+		},
 	})
 
-	rootHandler := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		if req.URL.Path == "/rate-limit" {
-			callCtx := ctx
-			if rlCfg.TimeoutMs > 0 {
-				var cancel context.CancelFunc
-				callCtx, cancel = context.WithTimeout(ctx, time.Duration(rlCfg.TimeoutMs)*time.Millisecond)
-				defer cancel()
-			}
+	// ── Middleware WAF (toutes les routes sauf /healthz) ─────────────────────
+	app.Use(wafMiddleware(ctx, wafMod, wafCfg))
 
-			reqObj := runtime.BuildRateLimitRequest(req)
-			decision, err := runtime.CallModule(callCtx, rlModule, rlCfg, reqObj)
-			if err != nil {
-				http.Error(w, err.Error(), 500)
-				return
-			}
+	// ── Routes ───────────────────────────────────────────────────────────────
+	app.Get("/healthz", func(c *fiber.Ctx) error {
+		return c.SendString("ok")
+	})
 
-			if decision == 0 {
-				w.WriteHeader(http.StatusOK)
-				fmt.Fprintln(w, "RateLimit OK")
-			} else {
-				w.WriteHeader(http.StatusForbidden)
-				fmt.Fprintln(w, "Request blocked by RateLimit")
-			}
-			return
+	app.All("/rate-limit", rateLimitHandler(ctx, rlMod, rlCfg))
+
+	app.All("/", func(c *fiber.Ctx) error {
+		return c.SendString("Request allowed by WAF")
+	})
+
+	// ── Start ─────────────────────────────────────────────────────────────────
+	utils.LogDebug("Edge Gateway version: %s", cfg.Version)
+	utils.LogSuccess("Edge Gateway listening on %s (config: %s)", cfg.Server.Bind, configPath)
+	log.Fatal(app.Listen(cfg.Server.Bind))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// loadAndInit charge le .wasm depuis le disque et l'initialise.
+// Retourne le module WASM (api.Module) ET sa config (pour TimeoutMs, ConfigMode…).
+// Toutes les erreurs sont retournées — aucune ignorée silencieusement.
+// ─────────────────────────────────────────────────────────────────────────────
+func loadAndInit(ctx context.Context, r wazero.Runtime, cfg *config.Config, name string) (api.Module, *config.ModuleCfg, error) {
+	modCfg := runtime.FindModule(cfg, name)
+	if modCfg == nil {
+		return nil, nil, fmt.Errorf("module %q not found in config", name)
+	}
+	if !modCfg.Enabled {
+		return nil, nil, fmt.Errorf("module %q is disabled", name)
+	}
+
+	wasmBytes, err := os.ReadFile(modCfg.Path)
+	if err != nil {
+		return nil, nil, fmt.Errorf("read %q wasm (%s): %w", name, modCfg.Path, err)
+	}
+
+	mod, err := runtime.LoadWasmModule(ctx, r, wasmBytes)
+	if err != nil {
+		return nil, nil, fmt.Errorf("load %q wasm: %w", name, err)
+	}
+
+	if err := runtime.InitModule(ctx, mod, modCfg); err != nil {
+		return nil, nil, fmt.Errorf("init %q module: %w", name, err)
+	}
+
+	return mod, modCfg, nil
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// wafMiddleware inspecte chaque requête via le module WASM WAF.
+// ─────────────────────────────────────────────────────────────────────────────
+func wafMiddleware(baseCtx context.Context, mod api.Module, modCfg *config.ModuleCfg) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		// /healthz ne passe pas par le WAF
+		if c.Path() == "/healthz" {
+			return c.Next()
 		}
 
-		callCtx := ctx
-		if wafCfg.TimeoutMs > 0 {
-			var cancel context.CancelFunc
-			callCtx, cancel = context.WithTimeout(ctx, time.Duration(wafCfg.TimeoutMs)*time.Millisecond)
-			defer cancel()
-		}
+		callCtx := withCallTimeout(baseCtx, modCfg.TimeoutMs)
+		defer callCtx.cancel()
 
-		reqObj := runtime.BuildWafRequest(req)
-		decision, err := runtime.CallModule(callCtx, wafModule, wafCfg, reqObj)
+		reqObj := runtime.BuildWafRequestFasthttp(c.Request())
+		decision, err := runtime.CallModule(callCtx, mod, modCfg, reqObj)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
+			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
 		}
 
-		reason, _ := runtime.ReadLastReason(callCtx, wafModule)
+		reason, _ := runtime.ReadLastReason(callCtx, mod)
+
 		wafHeader := "processed"
 		if decision == 0 && reason == "scope-bypass" {
 			wafHeader = "bypass"
 		}
-		w.Header().Set("SCLOUD-X-WAF", wafHeader)
+		c.Set("SCLOUD-X-WAF", wafHeader)
 
-		utils.LogInfo("WAF %s: method=%s path=%s decision=%d reason=%s", wafHeader, req.Method, req.URL.Path, decision, reason)
+		utils.LogInfo("WAF %s: method=%s path=%s decision=%d reason=%s",
+			wafHeader, c.Method(), c.Path(), decision, reason)
 
 		if decision != 0 {
-			w.WriteHeader(http.StatusForbidden)
-
-			fmt.Fprintf(w, "Request blocked by WAF\n\treason=%s\n\tmethod=%s\n\tpath=%s\nprotected by 2SCloud\n", reason, req.Method, req.URL.Path)
-			utils.LogWarning("WAF BLOCK: reason=%q method=%s path=%s", reason, req.Method, req.URL.Path)
-			return
-		} else {
-			mux.ServeHTTP(w, req)
+			utils.LogWarning("WAF BLOCK: reason=%q method=%s path=%s",
+				reason, c.Method(), c.Path())
+			return c.Status(fiber.StatusForbidden).SendString(
+				fmt.Sprintf("Request blocked by WAF\n\treason=%s\n\tmethod=%s\n\tpath=%s\nprotected by 2SCloud\n",
+					reason, c.Method(), c.Path()),
+			)
 		}
 
-	})
-
-	srv := &http.Server{
-		Addr:    cfg.Server.Bind,
-		Handler: rootHandler,
+		return c.Next()
 	}
+}
 
-	utils.LogDebug("Edge Gateway version: %s", cfg.Version)
-	utils.LogSuccess("Edge Gateway listening on %s (config: %s)", cfg.Server.Bind, configPath)
-	log.Fatal(srv.ListenAndServe())
+// ─────────────────────────────────────────────────────────────────────────────
+// rateLimitHandler appelle le module WASM rate-limit.
+// ─────────────────────────────────────────────────────────────────────────────
+func rateLimitHandler(baseCtx context.Context, mod api.Module, modCfg *config.ModuleCfg) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		callCtx := withCallTimeout(baseCtx, modCfg.TimeoutMs)
+		defer callCtx.cancel()
 
+		reqObj := runtime.BuildRateLimitRequestFasthttp(c.Request())
+		decision, err := runtime.CallModule(callCtx, mod, modCfg, reqObj)
+		if err != nil {
+			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+		}
+
+		if decision == 0 {
+			return c.SendString("RateLimit OK")
+		}
+		return c.Status(fiber.StatusForbidden).SendString("Request blocked by RateLimit")
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Helpers context
+// ─────────────────────────────────────────────────────────────────────────────
+
+type cancelCtx struct {
+	context.Context
+	cancel context.CancelFunc
+}
+
+// withCallTimeout retourne un contexte annulable avec timeout optionnel.
+// Appeler .cancel() libère les ressources immédiatement après l'appel WASM.
+func withCallTimeout(parent context.Context, timeoutMs int) cancelCtx {
+	if timeoutMs <= 0 {
+		// Pas de deadline : cancel no-op pour que l'appelant puisse toujours defer .cancel()
+		ctx, cancel := context.WithCancel(parent)
+		return cancelCtx{ctx, cancel}
+	}
+	ctx, cancel := context.WithTimeout(parent, time.Duration(timeoutMs)*time.Millisecond)
+	return cancelCtx{ctx, cancel}
 }
