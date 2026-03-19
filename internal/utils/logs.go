@@ -8,7 +8,7 @@ import (
 func LogSuccess(msg string, args ...interface{}) {
 	currentTime := time.Now()
 	formattedMsg := fmt.Sprintf(msg, args...)
-	fmt.Printf(Gray+"%s"+Reset+"[SCLOUD]["+Cyan+"INFO"+Reset+"] -> %s\n", currentTime.Format("[2006-01-02|15:04:05.000000]"), formattedMsg)
+	fmt.Printf(Gray+"%s"+Reset+"[SCLOUD]["+Green+"SUCCESS"+Reset+"] -> %s\n", currentTime.Format("[2006-01-02|15:04:05.000000]"), formattedMsg)
 }
 
 func LogDebug(msg string, args ...interface{}) {
