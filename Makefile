@@ -2,9 +2,10 @@
 SHELL := /bin/bash
 .SHELLFLAGS := -eu -o pipefail -c
 
-IMAGE     ?= 2scloud/edge-gateway
-TAG       ?= latest
-COMPUTE   := scloud-eg-compute
+IMAGE          ?= 2scloud/edge-gateway
+FRONTEND_IMAGE ?= 2scloud/frontend
+TAG            ?= latest
+COMPUTE        := scloud-eg-compute
 
 # ── Local dev ─────────────────────────────────────────────────────────────────
 
@@ -54,36 +55,52 @@ docker-load:
 # Build + load in one step
 docker: docker-build docker-load
 
+# ── Frontend Docker ───────────────────────────────────────────────────────────
+
+frontend-build:
+	@echo "Building frontend image $(FRONTEND_IMAGE):$(TAG)..."
+	docker build -t $(FRONTEND_IMAGE):$(TAG) ./frontend
+
+frontend-load:
+	@echo "Loading $(FRONTEND_IMAGE):$(TAG) into k3s containerd..."
+	docker save $(FRONTEND_IMAGE):$(TAG) | k3s ctr images import -
+
+frontend: frontend-build frontend-load
+
 # ── Kubernetes ────────────────────────────────────────────────────────────────
 
 # Deploy the full cluster (first time)
 k8s-up:
-	@echo "==> [1/5] Namespaces"
+	@echo "==> [1/6] Namespaces"
 	kubectl apply -f $(COMPUTE)/platform/namespace.yaml
 	kubectl apply -f $(COMPUTE)/gateway/namespace.yaml
 	kubectl apply -f $(COMPUTE)/dns/namespace.yaml
+	kubectl apply -f $(COMPUTE)/frontend/namespace.yaml
 
-	@echo "==> [2/5] RBAC & governance"
+	@echo "==> [2/6] RBAC & governance"
 	kubectl apply -f $(COMPUTE)/platform/rbac/
 	kubectl apply -f $(COMPUTE)/platform/governance/
 	kubectl apply -f $(COMPUTE)/gateway/rbac/
 	kubectl apply -f $(COMPUTE)/gateway/governance/
 	kubectl apply -f $(COMPUTE)/dns/rbac/
 
-	@echo "==> [3/5] ConfigMaps"
+	@echo "==> [3/6] ConfigMaps"
 	kubectl apply -f $(COMPUTE)/gateway/config/
 	kubectl apply -f $(COMPUTE)/dns/config/
+	kubectl apply -f $(COMPUTE)/frontend/config/
 
-	@echo "==> [4/5] Workloads & NetworkPolicies (compute locked down before gateway is live)"
+	@echo "==> [4/6] Workloads & NetworkPolicies (compute locked down before gateway is live)"
 	kubectl apply -f $(COMPUTE)/platform/workloads/
 	kubectl apply -f $(COMPUTE)/platform/network/
 	kubectl apply -f $(COMPUTE)/dns/workloads/
 	kubectl apply -f $(COMPUTE)/dns/network/
+	kubectl apply -f $(COMPUTE)/frontend/workloads/
+	kubectl apply -f $(COMPUTE)/frontend/network/
 
-	@echo "==> [5/5] Gateway (last — compute is already locked)"
+	@echo "==> [5/6] Gateway (last — all backends are already locked)"
 	kubectl apply -f $(COMPUTE)/gateway/workloads/
 
-	@echo "==> Patching CoreDNS for scloud.internal..."
+	@echo "==> [6/6] Patching CoreDNS for scloud.internal..."
 	kubectl apply -f $(COMPUTE)/dns/coredns/coredns-patch.yaml
 	kubectl rollout restart deployment/coredns -n kube-system
 
@@ -93,14 +110,16 @@ k8s-up:
 
 # Tear everything down (keeps the cluster, removes 2scloud namespaces)
 k8s-down:
-	kubectl delete namespace scloud-gateway scloud-compute scloud-dns --ignore-not-found
+	kubectl delete namespace scloud-gateway scloud-compute scloud-dns scloud-frontend --ignore-not-found
 
 # Re-apply configs + restart pods (after a config change)
 k8s-reload:
 	kubectl apply -f $(COMPUTE)/gateway/config/
 	kubectl apply -f $(COMPUTE)/dns/config/
-	kubectl rollout restart deployment/edge-gateway -n scloud-gateway
-	kubectl rollout restart deployment/scloud-dns    -n scloud-dns
+	kubectl apply -f $(COMPUTE)/frontend/config/
+	kubectl rollout restart deployment/edge-gateway   -n scloud-gateway
+	kubectl rollout restart deployment/scloud-dns     -n scloud-dns
+	kubectl rollout restart deployment/scloud-frontend -n scloud-frontend
 
 # Show status of all 2scloud components
 k8s-status:
@@ -110,6 +129,8 @@ k8s-status:
 	kubectl get pods,svc -n scloud-compute
 	@echo "── DNS ──────────────────────────────────"
 	kubectl get pods,svc -n scloud-dns
+	@echo "── Frontend ─────────────────────────────"
+	kubectl get pods,svc -n scloud-frontend
 
-# Full rebuild: build image, load it, redeploy
-k8s-deploy: docker k8s-reload
+# Full rebuild: gateway + frontend images, load them, redeploy
+k8s-deploy: docker frontend k8s-reload
