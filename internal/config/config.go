@@ -3,6 +3,7 @@ package config
 type Config struct {
 	Version string      `toml:"version"`
 	Server  ServerCfg   `toml:"server"`
+	Admin   AdminCfg    `toml:"admin"`
 	Logging LoggingCfg  `toml:"logging"`
 	Wasm    WasmCfg     `toml:"wasm"`
 	Modules []ModuleCfg `toml:"modules"`
@@ -12,6 +13,13 @@ type ServerCfg struct {
 	Bind               string `toml:"bind"`
 	AdminBind          string `toml:"admin_bind"`
 	GracefulShutdownMs int    `toml:"graceful_shutdown_ms"`
+}
+
+type AdminCfg struct {
+	Username      string `toml:"username"`
+	PasswordHash  string `toml:"password_hash"` // bcrypt hash or plaintext (dev only)
+	JWTSecret     string `toml:"jwt_secret"`
+	TokenTTLHours int    `toml:"token_ttl_hours"`
 }
 
 type LoggingCfg struct {
