@@ -7,12 +7,14 @@ import (
 	"os"
 	"time"
 
+	"2scloud-edge-gateway/internal/admin"
 	"2scloud-edge-gateway/internal/config"
 	"2scloud-edge-gateway/internal/runtime"
 	"2scloud-edge-gateway/internal/utils"
 
 	"github.com/BurntSushi/toml"
 	"github.com/gofiber/fiber/v2"
+	"github.com/google/uuid"
 	"github.com/tetratelabs/wazero"
 	"github.com/tetratelabs/wazero/api"
 	"github.com/tetratelabs/wazero/imports/wasi_snapshot_preview1"
@@ -33,6 +35,11 @@ func main() {
 	if _, err := toml.DecodeFile(configPath, &cfg); err != nil {
 		log.Fatalf("failed to load config: %v", err)
 	}
+
+	// ========================
+	// Shared admin store
+	// ========================
+	store := admin.NewStore()
 
 	// ========================
 	// WASM runtime
@@ -58,13 +65,16 @@ func main() {
 	}
 
 	// ========================
+	// Launch admin server
+	// ========================
+	go admin.StartAdminServer(&cfg, store)
+
+	// ========================
 	// Fiber app
 	// ========================
 	app := fiber.New(fiber.Config{
-		// Masque "Fiber" dans les headers
 		ServerHeader: "",
 		AppName:      "",
-		// Erreurs JSON cohérentes
 		ErrorHandler: func(c *fiber.Ctx, err error) error {
 			code := fiber.StatusInternalServerError
 			if e, ok := err.(*fiber.Error); ok {
@@ -75,7 +85,7 @@ func main() {
 	})
 
 	// ── Middleware WAF (toutes les routes sauf /healthz) ─────────────────────
-	app.Use(wafMiddleware(ctx, wafMod, wafCfg))
+	app.Use(wafMiddleware(ctx, wafMod, wafCfg, store))
 
 	// ── Routes ───────────────────────────────────────────────────────────────
 	app.Get("/healthz", func(c *fiber.Ctx) error {
@@ -96,8 +106,6 @@ func main() {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // loadAndInit charge le .wasm depuis le disque et l'initialise.
-// Retourne le module WASM (api.Module) ET sa config (pour TimeoutMs, ConfigMode…).
-// Toutes les erreurs sont retournées — aucune ignorée silencieusement.
 // ─────────────────────────────────────────────────────────────────────────────
 func loadAndInit(ctx context.Context, r wazero.Runtime, cfg *config.Config, name string) (api.Module, *config.ModuleCfg, error) {
 	modCfg := runtime.FindModule(cfg, name)
@@ -128,12 +136,13 @@ func loadAndInit(ctx context.Context, r wazero.Runtime, cfg *config.Config, name
 // ─────────────────────────────────────────────────────────────────────────────
 // wafMiddleware inspecte chaque requête via le module WASM WAF.
 // ─────────────────────────────────────────────────────────────────────────────
-func wafMiddleware(baseCtx context.Context, mod api.Module, modCfg *config.ModuleCfg) fiber.Handler {
+func wafMiddleware(baseCtx context.Context, mod api.Module, modCfg *config.ModuleCfg, store *admin.Store) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		// /healthz ne passe pas par le WAF
 		if c.Path() == "/healthz" {
 			return c.Next()
 		}
+
+		start := time.Now()
 
 		callCtx := withCallTimeout(baseCtx, modCfg.TimeoutMs)
 		defer callCtx.cancel()
@@ -145,6 +154,7 @@ func wafMiddleware(baseCtx context.Context, mod api.Module, modCfg *config.Modul
 		}
 
 		reason, _ := runtime.ReadLastReason(callCtx, mod)
+		latencyMs := time.Since(start).Milliseconds()
 
 		wafHeader := "processed"
 		if decision == 0 && reason == "scope-bypass" {
@@ -158,11 +168,40 @@ func wafMiddleware(baseCtx context.Context, mod api.Module, modCfg *config.Modul
 		if decision != 0 {
 			utils.LogWarning("WAF BLOCK: reason=%q method=%s path=%s",
 				reason, c.Method(), c.Path())
+
+			store.AddLog(admin.LogEntry{
+				ID:         uuid.New().String(),
+				Timestamp:  time.Now(),
+				IP:         c.IP(),
+				Method:     c.Method(),
+				Path:       c.Path(),
+				Decision:   "block",
+				Reason:     reason,
+				StatusCode: fiber.StatusForbidden,
+				LatencyMs:  latencyMs,
+			})
+
 			return c.Status(fiber.StatusForbidden).SendString(
 				fmt.Sprintf("Request blocked by WAF\n\treason=%s\n\tmethod=%s\n\tpath=%s\nprotected by 2SCloud\n",
 					reason, c.Method(), c.Path()),
 			)
 		}
+
+		// For allowed requests, record after the full handler runs via defer
+		// so we capture the actual status code
+		defer func() {
+			store.AddLog(admin.LogEntry{
+				ID:         uuid.New().String(),
+				Timestamp:  time.Now(),
+				IP:         c.IP(),
+				Method:     c.Method(),
+				Path:       c.Path(),
+				Decision:   "allow",
+				Reason:     reason,
+				StatusCode: c.Response().StatusCode(),
+				LatencyMs:  time.Since(start).Milliseconds(),
+			})
+		}()
 
 		return c.Next()
 	}
@@ -198,11 +237,8 @@ type cancelCtx struct {
 	cancel context.CancelFunc
 }
 
-// withCallTimeout retourne un contexte annulable avec timeout optionnel.
-// Appeler .cancel() libère les ressources immédiatement après l'appel WASM.
 func withCallTimeout(parent context.Context, timeoutMs int) cancelCtx {
 	if timeoutMs <= 0 {
-		// Pas de deadline : cancel no-op pour que l'appelant puisse toujours defer .cancel()
 		ctx, cancel := context.WithCancel(parent)
 		return cancelCtx{ctx, cancel}
 	}
