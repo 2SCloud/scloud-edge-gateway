@@ -2,8 +2,16 @@ version = "1.0"
 
 [server]
 bind = "0.0.0.0:8080"
-admin_bind = "127.0.0.1:9090"
+admin_bind = "0.0.0.0:9090"
 graceful_shutdown_ms = 5000
+
+[admin]
+username = "admin"
+# bcrypt hash of "admin" — CHANGE IN PRODUCTION
+# generate: htpasswd -bnBC 10 "" yourpassword | tr -d ':\n'
+password_hash = "$2a$10$JBBe.e7fib8padLfCuY5L.t0GIjc2YsO/hwfzu1hRFoWZBH6z3oSW"
+jwt_secret = "change-me-in-production-use-32-chars-min"
+token_ttl_hours = 12
 
 [logging]
 level = "info"
