@@ -12,7 +12,7 @@ RUN cd modules/scloud-eg-waf        && cargo build --release --target wasm32-was
 RUN cd modules/scloud-eg-rate-limit && cargo build --release --target wasm32-wasip1
 RUN cd modules/scloud-eg-firewall   && cargo build --release --target wasm32-wasip1
 
-FROM golang:1.24-alpine AS go-builder
+FROM golang:1.25-alpine AS go-builder
 
 WORKDIR /build
 
