@@ -75,11 +75,13 @@ func ReadLastReason(ctx context.Context, m api.Module) (string, error) {
 		return "", fmt.Errorf("failed to read reason from WASM memory")
 	}
 
+	reason := string(b)
+
 	if dealloc := m.ExportedFunction("dealloc"); dealloc != nil {
 		_, _ = dealloc.Call(ctx, uint64(ptr), uint64(l))
 	}
 
-	return string(b), nil
+	return reason, nil
 }
 
 func callWithBytes(ctx context.Context, m api.Module, allocFn, fnName string, payload []byte) (uint64, error) {
