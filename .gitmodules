@@ -1,6 +1,6 @@
 [submodule "modules/scloud-eg-waf"]
   path = modules/scloud-eg-waf
-  url = git@github.com:2SCloud/scloud-eg-waf.git
+	url = https://github.com/2SCloud/scloud-eg-waf.git
 [submodule "modules/scloud-eg-rate-limit"]
   path = modules/scloud-eg-rate-limit
   url = git@github.com:2SCloud/scloud-eg-rate-limit.git
