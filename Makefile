@@ -47,10 +47,12 @@ docker-build:
 	git submodule update --init --recursive
 	docker build -t $(IMAGE):$(TAG) .
 
-# Load the image into a local k3s cluster (k3s uses containerd, not Docker daemon)
+# Load the image into a local k3s cluster (k3s uses containerd, not Docker daemon).
+# The k3s containerd socket is root-owned (/run/k3s/containerd/containerd.sock),
+# so `ctr` requires sudo. Matches what deploy.sh does.
 docker-load:
 	@echo "Loading $(IMAGE):$(TAG) into k3s containerd..."
-	docker save $(IMAGE):$(TAG) | k3s ctr images import -
+	docker save $(IMAGE):$(TAG) | sudo k3s ctr images import -
 
 # Build + load in one step
 docker: docker-build docker-load
@@ -69,7 +71,7 @@ frontend-build:
 
 frontend-load:
 	@echo "Loading $(FRONTEND_IMAGE):$(TAG) into k3s containerd..."
-	docker save $(FRONTEND_IMAGE):$(TAG) | k3s ctr images import -
+	docker save $(FRONTEND_IMAGE):$(TAG) | sudo k3s ctr images import -
 
 frontend: frontend-build frontend-load
 
