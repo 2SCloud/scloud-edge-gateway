@@ -9,6 +9,7 @@ import (
 
 	"2scloud-edge-gateway/internal/admin"
 	"2scloud-edge-gateway/internal/config"
+	"2scloud-edge-gateway/internal/proxy"
 	"2scloud-edge-gateway/internal/runtime"
 	"2scloud-edge-gateway/internal/utils"
 
@@ -94,14 +95,73 @@ func main() {
 
 	app.All("/rate-limit", rateLimitHandler(ctx, rlMod, rlCfg))
 
+	// DoH (DNS-over-HTTPS) — RFC 8484. Every /dns-query request first
+	// passes through the WAF middleware above, so malformed / blocked
+	// queries are logged to the admin store just like any other HTTP
+	// request. When cfg.DNS.UpstreamAddr is empty the endpoint is left
+	// out entirely — no silent stub.
+	if cfg.DNS.UpstreamAddr != "" {
+		doh, err := proxy.New(proxy.Config{
+			UpstreamAddr:   cfg.DNS.UpstreamAddr,
+			QueryTimeout:   time.Duration(cfg.DNS.QueryTimeoutMs) * time.Millisecond,
+			MaxMessageSize: cfg.DNS.MaxMessageSize,
+		})
+		if err != nil {
+			log.Fatalf("doh: %v", err)
+		}
+		app.All("/dns-query", doh.Handler())
+		utils.LogSuccess("DoH endpoint enabled on /dns-query → %s", cfg.DNS.UpstreamAddr)
+	} else {
+		utils.LogInfo("DoH endpoint disabled (server.dns.upstream_addr is empty)")
+	}
+
 	app.All("/", func(c *fiber.Ctx) error {
 		return c.SendString("Request allowed by WAF")
 	})
 
 	// ── Start ─────────────────────────────────────────────────────────────────
 	utils.LogDebug("Edge Gateway version: %s", cfg.Version)
+
+	// TLS listener (public-facing). When tls_bind + cert/key are all
+	// configured we serve HTTPS alongside the plain-HTTP listener.
+	// Plain HTTP is needed unconditionally for kubelet liveness probes
+	// against /healthz — the kubelet can't validate an internal CA.
+	//
+	// A TLS failure (missing cert, bad key, port conflict) must not
+	// kill the process: the plain listener has to keep serving so the
+	// pod stays Ready and the WAF/admin API stay reachable. We log
+	// loudly and move on.
+	if cfg.Server.TLSBind != "" && cfg.Server.TLSCertFile != "" && cfg.Server.TLSKeyFile != "" {
+		if err := assertReadable(cfg.Server.TLSCertFile, cfg.Server.TLSKeyFile); err != nil {
+			utils.LogWarning("TLS listener disabled: %v", err)
+		} else {
+			go func() {
+				utils.LogSuccess("Edge Gateway (TLS) listening on %s (cert: %s)",
+					cfg.Server.TLSBind, cfg.Server.TLSCertFile)
+				if err := app.ListenTLS(cfg.Server.TLSBind, cfg.Server.TLSCertFile, cfg.Server.TLSKeyFile); err != nil {
+					utils.LogError("TLS listener stopped: %v (plain HTTP listener still running)", err)
+				}
+			}()
+		}
+	}
+
 	utils.LogSuccess("Edge Gateway listening on %s (config: %s)", cfg.Server.Bind, configPath)
 	log.Fatal(app.Listen(cfg.Server.Bind))
+}
+
+// assertReadable fails fast when any of the given paths cannot be
+// stat'd or read. Used as a pre-flight for ListenTLS so we can
+// disable TLS cleanly instead of crashing the whole gateway when
+// the cert secret hasn't been mounted yet.
+func assertReadable(paths ...string) error {
+	for _, p := range paths {
+		f, err := os.Open(p)
+		if err != nil {
+			return fmt.Errorf("cannot open %s: %w", p, err)
+		}
+		_ = f.Close()
+	}
+	return nil
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

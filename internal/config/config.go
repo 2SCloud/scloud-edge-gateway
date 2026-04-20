@@ -6,13 +6,26 @@ type Config struct {
 	Admin   AdminCfg    `toml:"admin"`
 	Logging LoggingCfg  `toml:"logging"`
 	Wasm    WasmCfg     `toml:"wasm"`
+	DNS     DNSCfg      `toml:"dns"`
 	Modules []ModuleCfg `toml:"modules"`
 }
 
 type ServerCfg struct {
 	Bind               string `toml:"bind"`
+	TLSBind            string `toml:"tls_bind"`
+	TLSCertFile        string `toml:"tls_cert_file"`
+	TLSKeyFile         string `toml:"tls_key_file"`
 	AdminBind          string `toml:"admin_bind"`
 	GracefulShutdownMs int    `toml:"graceful_shutdown_ms"`
+}
+
+// DNSCfg configures the DoH (DNS-over-HTTPS) proxy endpoint exposed
+// on the gateway at /dns-query. When UpstreamAddr is empty the
+// endpoint is disabled entirely.
+type DNSCfg struct {
+	UpstreamAddr   string `toml:"upstream_addr"`    // e.g. "scloud-dns.scloud-dns.svc.cluster.local:53"
+	QueryTimeoutMs int    `toml:"query_timeout_ms"` // per-query timeout to the upstream DNS server
+	MaxMessageSize int    `toml:"max_message_size"` // bytes, for both request and response
 }
 
 type AdminCfg struct {

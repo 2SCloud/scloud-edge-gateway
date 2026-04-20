@@ -2,8 +2,22 @@ version = "1.0"
 
 [server]
 bind = "0.0.0.0:8080"
+# HTTPS listener (optional). Leave all three empty to disable.
+# In k8s the TLS secret is issued by cert-manager and mounted at
+# /etc/edge-gateway/tls/. For local dev generate self-signed certs,
+# or leave these empty and run plain HTTP on `bind`.
+tls_bind = ""
+tls_cert_file = ""
+tls_key_file = ""
 admin_bind = "0.0.0.0:9090"
 graceful_shutdown_ms = 5000
+
+[dns]
+# DoH upstream — set to a plain UDP/TCP DNS resolver address.
+# Empty disables the /dns-query endpoint entirely.
+upstream_addr = ""
+query_timeout_ms = 2000
+max_message_size = 65535
 
 [admin]
 username = "admin"
