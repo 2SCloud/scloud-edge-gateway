@@ -57,9 +57,15 @@ docker: docker-build docker-load
 
 # ── Frontend Docker ───────────────────────────────────────────────────────────
 
+# NEXT_PUBLIC_API_URL is baked into the client bundle at build time.
+# Override with: make frontend-build NEXT_PUBLIC_API_URL=http://your-admin-host:9090
+NEXT_PUBLIC_API_URL ?= http://localhost:9090
+
 frontend-build:
-	@echo "Building frontend image $(FRONTEND_IMAGE):$(TAG)..."
-	docker build -t $(FRONTEND_IMAGE):$(TAG) ./frontend
+	@echo "Building frontend image $(FRONTEND_IMAGE):$(TAG) (NEXT_PUBLIC_API_URL=$(NEXT_PUBLIC_API_URL))..."
+	docker build \
+		--build-arg NEXT_PUBLIC_API_URL=$(NEXT_PUBLIC_API_URL) \
+		-t $(FRONTEND_IMAGE):$(TAG) ./frontend
 
 frontend-load:
 	@echo "Loading $(FRONTEND_IMAGE):$(TAG) into k3s containerd..."
