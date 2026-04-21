@@ -37,6 +37,12 @@ runtime = "wazero"
 cache_dir = "./cache/wasm"
 max_modules = 64
 
+[doh]
+enabled = true
+paths = ["/dns-query"]
+upstream_url = "http://scloud-dns:8053"
+timeout_ms = 5000
+
 [[modules]]
 id = "waf"
 enabled = true

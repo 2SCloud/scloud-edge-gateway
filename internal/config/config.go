@@ -8,6 +8,14 @@ type Config struct {
 	Wasm    WasmCfg     `toml:"wasm"`
 	DNS     DNSCfg      `toml:"dns"`
 	Modules []ModuleCfg `toml:"modules"`
+	DoH     DoHCfg      `toml:"doh"`
+}
+
+type DoHCfg struct {
+	Enabled      bool     `toml:"enabled"`
+	Paths        []string `toml:"paths"`
+	UpstreamURL  string   `toml:"upstream_url"`
+	TimeoutMs    int      `toml:"timeout_ms"`
 }
 
 type ServerCfg struct {

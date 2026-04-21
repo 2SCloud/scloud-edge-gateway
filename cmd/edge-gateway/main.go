@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"time"
 
 	"2scloud-edge-gateway/internal/admin"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 	"github.com/gofiber/fiber/v2"
+	fiberproxy "github.com/gofiber/fiber/v2/middleware/proxy"
 	"github.com/google/uuid"
 	"github.com/tetratelabs/wazero"
 	"github.com/tetratelabs/wazero/api"
@@ -95,12 +97,23 @@ func main() {
 
 	app.All("/rate-limit", rateLimitHandler(ctx, rlMod, rlCfg))
 
-	// DoH (DNS-over-HTTPS) — RFC 8484. Every /dns-query request first
-	// passes through the WAF middleware above, so malformed / blocked
-	// queries are logged to the admin store just like any other HTTP
-	// request. When cfg.DNS.UpstreamAddr is empty the endpoint is left
-	// out entirely — no silent stub.
-	if cfg.DNS.UpstreamAddr != "" {
+	// DoH (RFC 8484). Prefer the HTTP passthrough to scloud-dns's native
+	// DoH endpoint; fall back to the in-gateway DoH→UDP translator
+	// (internal/proxy) if only [dns] is configured. Every /dns-query
+	// request still passes through the WAF middleware above, so malformed
+	// or blocked queries are logged to the admin store.
+	switch {
+	case cfg.DoH.Enabled && cfg.DoH.UpstreamURL != "":
+		paths := cfg.DoH.Paths
+		if len(paths) == 0 {
+			paths = []string{"/dns-query"}
+		}
+		for _, p := range paths {
+			target := strings.TrimRight(cfg.DoH.UpstreamURL, "/") + p
+			utils.LogInfo("DoH route %s -> %s (http passthrough)", p, target)
+			app.All(p, dohProxyHandler(target))
+		}
+	case cfg.DNS.UpstreamAddr != "":
 		doh, err := proxy.New(proxy.Config{
 			UpstreamAddr:   cfg.DNS.UpstreamAddr,
 			QueryTimeout:   time.Duration(cfg.DNS.QueryTimeoutMs) * time.Millisecond,
@@ -110,9 +123,9 @@ func main() {
 			log.Fatalf("doh: %v", err)
 		}
 		app.All("/dns-query", doh.Handler())
-		utils.LogSuccess("DoH endpoint enabled on /dns-query → %s", cfg.DNS.UpstreamAddr)
-	} else {
-		utils.LogInfo("DoH endpoint disabled (server.dns.upstream_addr is empty)")
+		utils.LogSuccess("DoH endpoint enabled on /dns-query → %s (udp translator)", cfg.DNS.UpstreamAddr)
+	default:
+		utils.LogInfo("DoH disabled (set [doh].upstream_url or [dns].upstream_addr)")
 	}
 
 	app.All("/", func(c *fiber.Ctx) error {
@@ -264,6 +277,20 @@ func wafMiddleware(baseCtx context.Context, mod api.Module, modCfg *config.Modul
 		}()
 
 		return c.Next()
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// dohProxyHandler forwards RFC 8484 DoH requests to scloud-dns, preserving
+// method, body and the application/dns-message Content-Type.
+// ─────────────────────────────────────────────────────────────────────────────
+func dohProxyHandler(target string) fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		if err := fiberproxy.Do(c, target); err != nil {
+			return fiber.NewError(fiber.StatusBadGateway, err.Error())
+		}
+		c.Response().Header.Del(fiber.HeaderServer)
+		return nil
 	}
 }
 
