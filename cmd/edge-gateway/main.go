@@ -13,6 +13,7 @@ import (
 	"2scloud-edge-gateway/internal/proxy"
 	"2scloud-edge-gateway/internal/runtime"
 	"2scloud-edge-gateway/internal/utils"
+	"2scloud-edge-gateway/internal/version"
 
 	"github.com/BurntSushi/toml"
 	"github.com/gofiber/fiber/v2"
@@ -133,7 +134,7 @@ func main() {
 	})
 
 	// ── Start ─────────────────────────────────────────────────────────────────
-	utils.LogDebug("Edge Gateway version: %s", cfg.Version)
+	utils.LogInfo("Edge Gateway %s (config version %s)", version.Version, cfg.Version)
 
 	// TLS listener (public-facing). When tls_bind + cert/key are all
 	// configured we serve HTTPS alongside the plain-HTTP listener.
