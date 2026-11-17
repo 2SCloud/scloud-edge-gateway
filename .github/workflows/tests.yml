@@ -1,0 +1,82 @@
+name: Tests
+
+# Builds, vets and tests the Go code on Linux, Windows and macOS with three Go
+# toolchains:
+#   go.mod    → the minimum version declared in go.mod
+#   oldstable → the previous Go release
+#   stable    → the latest Go release
+#
+# "Tests passed" fails as soon as one OS/toolchain combination fails. It is the
+# check to make required in the ruleset of main and develop, so that nothing
+# can be merged unless every build and every Go test passes.
+
+on:
+  pull_request:
+  push:
+    branches: [main, develop]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go:
+    name: Go ${{ matrix.go }} (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        go: [go.mod, oldstable, stable]
+    defaults:
+      run:
+        shell: bash
+    env:
+      # Use exactly the toolchain installed by setup-go, never an automatic download
+      GOTOOLCHAIN: local
+
+    steps:
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version: ${{ matrix.go != 'go.mod' && matrix.go || '' }}
+          go-version-file: ${{ matrix.go == 'go.mod' && 'go.mod' || '' }}
+          cache-dependency-path: go.sum
+
+      - name: Go version
+        run: go version
+
+      - name: Verify modules
+        run: go mod verify
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test -count=1 ./...
+
+  tests-passed:
+    name: Tests passed
+    if: always()
+    needs: [go]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every build and test passed
+        env:
+          RESULT: ${{ needs.go.result }}
+        run: |
+          if [[ "$RESULT" != "success" ]]; then
+            echo "::error::At least one OS/Go toolchain combination failed (${RESULT}): merging is blocked"
+            exit 1
+          fi
+          echo "All OS/Go toolchain combinations passed"
